@@ -1,0 +1,109 @@
+name: Frontend CI
+
+# Runs when a pull request changes the frontend, or when started manually
+# from the Actions tab. Lint and test run together. The image is built
+# only after both succeed.
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "starter/frontend/**"
+      - ".github/workflows/frontend-ci.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: frontend-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: starter/frontend
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "18.14.2"
+          cache: npm
+          cache-dependency-path: starter/frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run ESLint
+        run: npm run lint
+
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: starter/frontend
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "18.14.2"
+          cache: npm
+          cache-dependency-path: starter/frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run unit tests
+        env:
+          CI: "true"
+        run: npm test
+
+  build:
+    name: Build
+    needs: [lint, test]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Build Docker image
+        working-directory: starter/frontend
+        env:
+          # Secret overrides the local default once the backend load balancer exists.
+          REACT_APP_MOVIE_API_URL: ${{ secrets.REACT_APP_MOVIE_API_URL != '' && secrets.REACT_APP_MOVIE_API_URL || 'http://localhost:5000' }}
+        run: |
+          docker build \
+            --build-arg REACT_APP_MOVIE_API_URL="$REACT_APP_MOVIE_API_URL" \
+            --tag "mp-frontend:${{ github.sha }}" \
+            .
+
+  notify:
+    name: Report result
+    needs: [lint, test, build]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Publish pipeline result
+        run: |
+          {
+            echo "### Frontend CI"
+            echo ""
+            echo "| Job | Result |"
+            echo "| --- | --- |"
+            echo "| Lint | ${{ needs.lint.result }} |"
+            echo "| Test | ${{ needs.test.result }} |"
+            echo "| Build | ${{ needs.build.result }} |"
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "${{ needs.lint.result }}" != "success" ] || [ "${{ needs.test.result }}" != "success" ] || [ "${{ needs.build.result }}" != "success" ]; then
+            echo "::error::Frontend CI failed. lint=${{ needs.lint.result }}, test=${{ needs.test.result }}, build=${{ needs.build.result }}"
+            exit 1
+          fi
+          echo "Frontend CI passed."
